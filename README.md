@@ -6,6 +6,18 @@ OpenCode integration for [claude-mem](https://github.com/thedotmack/claude-mem) 
 
 `claude-mem-opencode` automatically captures your OpenCode coding sessions as compressed memories, making them searchable for future sessions. It provides persistent context across sessions with ~10x token efficiency compared to storing full tool outputs.
 
+## Requirements
+
+- **Node.js** >= 18.0.0
+- **Bun** >= 1.0.0
+- **claude-mem** >= 8.5.4 (for full functionality)
+
+## Important Note
+
+claude-mem v8.5.4 worker API is required for full functionality but is only available from [GitHub releases](https://github.com/thedotmack/claude-mem/releases), not npm.
+
+See [Installation Guide](docs/INSTALLATION.md) for detailed instructions on installing claude-mem from GitHub.
+
 ## Features
 
 - **Automatic Memory Capture**: Captures tool usage automatically via OpenCode events
@@ -15,24 +27,43 @@ OpenCode integration for [claude-mem](https://github.com/thedotmack/claude-mem) 
 - **Session Mapping**: Maps OpenCode sessions to claude-mem sessions
 - **Context Injection**: Automatically injects relevant memories into new sessions
 
-## Installation
-
-```bash
-npm install claude-mem-opencode
-```
-
 ## Quick Start
 
-### 1. Install claude-mem
+### 1. Install claude-mem v8.5.4 from GitHub
 
 ```bash
-npm install -g claude-mem
+# Clone claude-mem repository
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+
+# Build and install
+bun install
+bun run build
+bun link
+
+# Verify installation
+claude-mem --version
+# Should output: 8.5.4
 ```
 
 ### 2. Start claude-mem worker
 
 ```bash
 claude-mem worker start
+
+# Verify worker is running
+curl http://localhost:37777/api/health
+```
+
+### 3. Use in your code
+
+```typescript
+import { ClaudeMemIntegration } from 'claude-mem-opencode'
+
+const integration = new ClaudeMemIntegration()
+await integration.initialize()
+
+// Memory is now being captured automatically!
 ```
 
 ### 3. Use in OpenCode
@@ -309,11 +340,46 @@ npm run test:e2e
 npm run bundle
 ```
 
-## Requirements
+## Testing
 
-- Node.js >= 18.0.0
-- Bun >= 1.0.0
-- claude-mem >= 8.5.0
+Run unit tests (no claude-mem required):
+
+```bash
+npm run test:unit
+# Expected: 54 pass
+```
+
+Run integration/E2E tests (requires claude-mem worker):
+
+```bash
+# Start worker
+claude-mem worker start
+
+# Run tests
+npm run test:integration
+npm run test:e2e
+
+# Stop worker
+claude-mem worker stop
+```
+
+See [Testing Guide](docs/TESTING.md) for comprehensive testing instructions.
+
+## Troubleshooting
+
+### Worker not starting
+
+```bash
+# Verify claude-mem installation
+claude-mem --version
+# Must be 8.5.4 or higher
+
+# Check worker logs
+claude-mem worker logs
+
+# Ensure port 37777 is available
+lsof -i :37777  # macOS/Linux
+```
 
 ## License
 

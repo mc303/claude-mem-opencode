@@ -31,7 +31,7 @@
     "typescript": "^5.3.0"
   },
   "peerDependencies": {
-    "claude-mem": ">=1.0.0"
+    "claude-mem": ">=8.5.4"
   },
   "peerDependenciesMeta": {
     "claude-mem": {

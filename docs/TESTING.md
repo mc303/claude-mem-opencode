@@ -2,26 +2,296 @@
 
 This guide provides step-by-step instructions for testing `claude-mem-opencode`.
 
-## ⚠️ Important Notice
+## Prerequisites
 
-**Integration and E2E tests are currently disabled** because they require a claude-mem worker API that is not yet available in the published `claude-mem` npm package (v3.9.16).
+- Node.js >= 18.0.0
+- Bun >= 1.0.0
+- Git
+- claude-mem >= 8.5.4 (for integration/E2E tests)
 
-### What You Can Test Now:
+## Test Categories
 
-- ✅ **Unit Tests**: All 54 tests pass, no external dependencies
-- ⏸️ **Integration Tests**: Require claude-mem worker (not yet available)
-- ⏸️ **E2E Tests**: Require claude-mem worker (not yet available)
-- ⏸️ **Manual Testing**: Requires claude-mem worker (not yet available)
+1. **Unit Tests** - Test individual components (no external dependencies)
+2. **Integration Tests** - Test API contracts (requires claude-mem worker)
+3. **E2E Tests** - Test full workflows (requires claude-mem worker)
+4. **Manual Testing** - Interactive testing with OpenCode
 
-### Available Functionality (No Worker Required):
+---
 
-You can use these core components without a worker:
+## 1. Unit Tests
+
+Unit tests run independently and don't require any external services.
+
+### Run all unit tests:
+
+```bash
+bun run test:unit
+```
+
+Expected output:
+```
+54 pass
+0 fail
+Ran 54 tests across 4 files
+```
+
+### Run specific unit test file:
+
+```bash
+# Test privacy tag stripping
+bun test tests/unit/privacy.test.ts
+
+# Test session mapping
+bun test tests/unit/session-mapper.test.ts
+
+# Test worker client
+bun test tests/unit/worker-client.test.ts
+
+# Test project name extraction
+bun test tests/unit/utils.test.ts
+```
+
+### What's being tested:
+
+- ✅ `PrivacyTagStripper` - Privacy tag removal from text and JSON
+- ✅ `SessionMapper` - Mapping between OpenCode and claude-mem sessions
+- ✅ `WorkerClient` - HTTP client for claude-mem API (with mock server)
+- ✅ `ProjectNameExtractor` - Extracting project names from paths
+
+---
+
+## 2. Integration Tests
+
+Integration tests verify API contracts with a real claude-mem worker.
+
+### Prerequisite: Install and Start claude-mem Worker v8.5.4
+
+**Important**: claude-mem v8.5.4 worker API is only available from GitHub releases, not npm.
+
+```bash
+# Clone and install claude-mem
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+bun install
+bun run build
+bun link
+
+# Verify installation
+claude-mem --version
+# Should output: 8.5.4
+
+# Start worker
+claude-mem worker start
+
+# Check worker status
+claude-mem worker status
+
+# Verify worker is responding
+curl http://localhost:37777/api/health
+```
+
+Expected health check response:
+```json
+{
+  "status": "ok",
+  "version": "8.5.4"
+}
+```
+
+### Run integration tests:
+
+```bash
+bun run test:integration
+```
+
+### What's being tested:
+
+- ✅ API contract verification
+- ✅ Health check endpoint
+- ✅ Session initialization
+- ✅ Observation creation
+- ✅ Session completion
+- ✅ Memory search
+- ✅ Context injection
+
+### Stop worker after testing:
+
+```bash
+claude-mem worker stop
+```
+
+---
+
+## 3. E2E (End-to-End) Tests
+
+E2E tests verify complete user workflows.
+
+### Prerequisite: Start claude-mem Worker
+
+```bash
+claude-mem worker start
+```
+
+### Run E2E tests:
+
+```bash
+bun run test:e2e
+```
+
+### What's being tested:
+
+- ✅ Session lifecycle (init → observe → complete)
+- ✅ Memory capture from tool usage
+- ✅ Memory retrieval and compression
+- ✅ Privacy protection
+- ✅ Tool capture (bash, search, etc.)
+
+### Stop worker after testing:
+
+```bash
+claude-mem worker stop
+```
+
+---
+
+## 4. Manual Testing
+
+Test integration manually in a real development environment.
+
+### Step 1: Install claude-mem v8.5.4 from GitHub
+
+```bash
+# Clone claude-mem repository
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+
+# Build and install
+bun install
+bun run build
+bun link
+```
+
+### Step 2: Install claude-mem-opencode
+
+```bash
+# Install from local repository
+cd /path/to/claude-mem-opencode
+bun install
+bun link
+```
+
+### Step 3: Create Test Project
+
+```bash
+mkdir claude-mem-test
+cd claude-mem-test
+npm init -y
+```
+
+### Step 4: Create Test Script
+
+Create `test-integration.js`:
+
+```javascript
+import { ClaudeMemIntegration } from 'claude-mem-opencode'
+
+async function test() {
+  console.log('Initializing claude-mem-opencode...')
+
+  const integration = new ClaudeMemIntegration('http://localhost:37777')
+
+  // Initialize integration
+  await integration.initialize()
+  console.log('✅ Integration initialized')
+
+  // Get status
+  const status = await integration.getStatus()
+  console.log('Status:', status)
+
+  // Search memories
+  const results = await integration.searchMemory('test', { limit: 5 })
+  console.log('Search results:', results)
+
+  // Get project context
+  const context = await integration.getProjectContext()
+  console.log('Project context:', context)
+
+  // Shutdown
+  await integration.shutdown()
+  console.log('✅ Integration shut down')
+}
+
+test().catch(console.error)
+```
+
+### Step 5: Run Test Script
+
+```bash
+claude-mem worker start
+node test-integration.js
+```
+
+### Step 6: Test with OpenCode
+
+If you have OpenCode installed:
 
 ```typescript
-import { PrivacyTagStripper } from 'claude-mem-opencode'
-import { SessionMapper } from 'claude-mem-opencode'
-import { ProjectNameExtractor } from 'claude-mem-opencode'
+// In your OpenCode project
+import { ClaudeMemIntegration } from 'claude-mem-opencode'
+
+const integration = new ClaudeMemIntegration()
+await integration.initialize()
+
+// All tool usage is now automatically captured!
+// Memories will be searchable in future sessions.
 ```
+
+### Step 7: Verify Memory Capture
+
+```bash
+# Use claude-mem CLI to verify memories
+claude-mem search "your query"
+claude-mem memories list
+```
+
+---
+
+## Test Checklist
+
+### Unit Tests
+
+- [ ] All 54 unit tests pass
+- [ ] No TypeScript compilation errors
+- [ ] Build completes successfully
+- [ ] Bundle generated at `dist/bundle/opencode-mem.js`
+
+### Integration Tests
+
+- [ ] claude-mem v8.5.4 installed from GitHub
+- [ ] Worker health check returns OK
+- [ ] Session initialization works
+- [ ] Observations are created
+- [ ] Sessions are completed
+- [ ] Search returns results
+- [ ] Context injection works
+
+### E2E Tests
+
+- [ ] Session lifecycle completes successfully
+- [ ] Tools are captured correctly
+- [ ] Privacy tags are stripped
+- [ ] Memories are compressed
+- [ ] Search retrieves correct memories
+
+### Manual Testing
+
+- [ ] claude-mem v8.5.4 installed from GitHub
+- [ ] Worker starts successfully
+- [ ] Integration initializes without errors
+- [ ] Status check works
+- [ ] Search functionality works
+- [ ] Context injection works
+- [ ] Shutdown completes cleanly
 
 ---
 
