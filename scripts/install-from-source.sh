@@ -42,7 +42,7 @@ echo "Installing claude-mem and claude-mem-opencode from Source"
 echo "=========================================="
 echo ""
 echo "claude-mem version: $CLAUDE_MEM_VERSION"
-echo "claude-mem-opencode version: $OPENCODE_MEM_VERSION"
+echo "  claude-mem-opencode version: $OPENCODE_MEM_VERSION"
 
 if [ -n "$DEST_DIR" ]; then
     echo "Installation destination: $DEST_DIR"
@@ -55,8 +55,18 @@ echo ""
 echo "[1/5] Installing claude-mem v$CLAUDE_MEM_VERSION from GitHub..."
 echo ""
 
-TEMP_DIR=$(mktemp -d)
-echo "  Using temp directory: $TEMP_DIR"
+# Save original directory before we change directories
+ORIGINAL_DIR=$(pwd)
+
+# Use DEST_DIR/tmp if DEST_DIR is specified, otherwise use mktemp -d
+if [ -n "$DEST_DIR" ]; then
+    TEMP_DIR="${DEST_DIR}/tmp"
+    mkdir -p "$TEMP_DIR"
+    echo "  Using temp directory: $TEMP_DIR (in destination)"
+else
+    TEMP_DIR=$(mktemp -d)
+    echo "  Using temp directory: $TEMP_DIR"
+fi
 
 cd $TEMP_DIR
 
@@ -72,6 +82,11 @@ echo ""
 
 cd claude-mem
 
+# Save claude-mem directory for later use
+CLAUDE_MEM_DIR=$(pwd)
+echo "  claude-mem directory: $CLAUDE_MEM_DIR"
+echo ""
+
 echo "  Installing dependencies..."
 bun install
 echo "  ✅ Dependencies installed"
@@ -82,49 +97,37 @@ bun run build
 echo "  ✅ Build complete"
 echo ""
 
-echo "  Installing globally..."
-npm install -g .
-echo "  ✅ claude-mem installed globally"
+echo "  Skipping global install (use local binary)"
+echo "  ✅ claude-mem built locally"
 echo ""
 
-# Verify installation
-CLAUDE_MEM_INSTALLED=$(claude-mem --version 2>/dev/null || echo "unknown")
-echo "  ✅ claude-mem v$CLAUDE_MEM_INSTALLED installed"
-echo ""
+# Verify local build
+CLAUDE_MEM_BIN="node_modules/.bin/claude-mem"
+if [ -f "$CLAUDE_MEM_BIN" ]; then
+    CLAUDE_MEM_INSTALLED=$(bun run --silent -- claude-mem --version 2>/dev/null || echo "unknown")
+    echo "  ✅ claude-mem v$CLAUDE_MEM_INSTALLED available locally"
+else
+    echo "  ⚠️  claude-mem binary not found, will use npx"
+    CLAUDE_MEM_INSTALLED="$CLAUDE_MEM_VERSION"
+    echo "  ✅ claude-mem v$CLAUDE_MEM_INSTALLED (will use npx)"
+fi
 
 # Step 2: Install claude-mem-opencode from source
 echo ""
-echo "Usage: bash scripts/install-from-source.sh [claude-mem-version] [claude-mem-opencode-version] [destination-folder]"
-echo ""
-echo "Arguments:"
-echo "  claude-mem-version:    claude-mem version to install (default: 8.5.4)"
-echo "  claude-mem-opencode-version: claude-mem-opencode version (default: latest)"
-echo "  destination-folder:      Custom folder to install claude-mem-opencode (optional)"
-echo "                           If specified, claude-mem-opencode will be built locally"
-echo "                           instead of installed globally"
-echo ""
-echo "Examples:"
-echo "  # Default: Install latest versions globally"
-echo "  bash scripts/install-from-source.sh"
-echo ""
-echo "  # Install specific versions"
-echo "  bash scripts/install-from-source.sh 8.5.3 latest"
-echo ""
-echo "  # Install to local folder (for development/testing)"
-echo "  bash scripts/install-from-source.sh 8.5.4 latest /path/to/opencode/project"
-echo ""
-echo "  # Install to absolute path"
-echo "  bash scripts/install-from-source.sh latest latest /home/user/my-opcode-integration"
+echo "[2/5] Installing claude-mem-opencode from source..."
 echo ""
 
-OPENCODE_DIR=$(pwd)  # Default to current directory
+OPENCODE_DIR="$ORIGINAL_DIR"  # Use original directory
 if [ -n "$DEST_DIR" ]; then
+    echo "  Copying project to $DEST_DIR..."
+    rsync -av --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='tmp' \
+        "$ORIGINAL_DIR/" "$DEST_DIR/"
     OPENCODE_DIR="$DEST_DIR"
-    echo "  Destination: $DEST_DIR"
+    echo "  ✅ Project copied to: $DEST_DIR"
 fi
 
 cd $OPENCODE_DIR
-echo "  Directory: $OPENCODE_DIR"
+echo "  Working directory: $OPENCODE_DIR"
 
 echo "  Installing dependencies..."
 bun install
@@ -171,14 +174,14 @@ echo ""
 echo "[3/5] Verifying installations..."
 echo ""
 
-if ! command -v claude-mem &>/dev/null; then
-    echo "❌ claude-mem not found in PATH"
-    exit 1
-fi
-
 if [ -n "$DEST_DIR" ]; then
-    echo "  Local installation mode - skipping global command check"
+    echo "  Local installation mode - using local claude-mem binary"
+    echo "  ✅ claude-mem available at: $CLAUDE_MEM_DIR"
 else
+    if ! command -v claude-mem &>/dev/null; then
+        echo "❌ claude-mem not found in PATH"
+        exit 1
+    fi
     if ! command -v claude-mem-opencode &>/dev/null; then
         echo "❌ claude-mem-opencode not found in PATH"
         exit 1
@@ -193,7 +196,14 @@ echo "[4/5] Testing claude-mem worker..."
 echo ""
 
 echo "  Starting worker..."
-claude-mem worker start &
+if [ -n "$DEST_DIR" ]; then
+    # Use local claude-mem worker
+    cd "$CLAUDE_MEM_DIR"
+    bun plugin/scripts/worker-service.cjs start &
+else
+    # Use globally installed claude-mem
+    claude-mem worker start &
+fi
 WORKER_PID=$!
 echo "  Worker PID: $WORKER_PID"
 echo ""
@@ -233,29 +243,51 @@ WORKER_API_VERSION=$(echo $WORKER_HEALTH | jq -r '.apiVersion' 2>/dev/null || ec
 echo "✅ Worker is healthy (API v$WORKER_API_VERSION)"
 echo ""
 
-# Step 5: Run quick test
-
-echo ""
-echo "Usage: bash scripts/install-from-source.sh [claude-mem-version] [claude-mem-opencode-version] [destination-folder]"
-echo ""
-echo "Arguments:"
-echo "  claude-mem-version:    claude-mem version to install (default: 8.5.4)"
-echo "  claude-mem-opencode-version: claude-mem-opencode version (default: latest)"
-echo "  destination-folder:      Custom folder to install claude-mem-opencode (optional)"
-echo "                           If specified, claude-mem-opencode will be built locally"
-echo "                           instead of installed globally"
-echo ""
-echo "Examples:"
-echo "  # Default: Install latest versions globally"
-echo "  bash scripts/install-from-source.sh"
-echo ""
-echo "  # Install specific versions"
-echo "  bash scripts/install-from-source.sh 8.5.3 latest"
-echo ""
-echo "  # Install to local folder (for development/testing)"
-echo "  bash scripts/install-from-source.sh 8.5.4 latest /path/to/opencode/project"
-echo ""
-echo "  # Install to absolute path"
-echo "  bash scripts/install-from-source.sh latest latest /home/user/my-opencode-integration"
+# Step 5: Run unit tests
+echo "[5/5] Running unit tests..."
 echo ""
 
+if [ -n "$DEST_DIR" ]; then
+    cd "$OPENCODE_DIR"
+fi
+
+echo "  Running tests..."
+bun test tests/unit
+echo "  ✅ Unit tests passed"
+echo ""
+
+# Cleanup
+echo "Cleaning up..."
+echo "  Killing worker process..."
+kill $WORKER_PID 2>/dev/null || true
+
+if [ -n "$DEST_DIR" ]; then
+    echo "  Keeping temp directory: $TEMP_DIR"
+else
+    echo "  Removing temp directory..."
+    cd /
+    rm -rf $TEMP_DIR
+fi
+
+echo ""
+
+# Summary
+echo "=========================================="
+echo "Installation Complete!"
+echo "=========================================="
+echo ""
+echo "claude-mem version: $CLAUDE_MEM_VERSION"
+echo "  ✅ Available at: $CLAUDE_MEM_DIR"
+echo ""
+echo "claude-mem-opencode version: $OPENCODE_MEM_VERSION"
+if [ -n "$DEST_DIR" ]; then
+    echo "  ✅ Built at: $OPENCODE_DIR"
+else
+    echo "  ✅ Installed globally"
+fi
+echo ""
+echo "Next steps:"
+echo "  1. Start the worker: bun plugin/scripts/worker-service.cjs start"
+echo "  2. Run tests: bun test"
+echo "  3. Use in your project: import { OpencodeIntegration } from 'claude-mem-opencode'"
+echo ""
