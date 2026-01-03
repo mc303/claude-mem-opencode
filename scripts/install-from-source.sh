@@ -6,6 +6,37 @@ CLAUDE_MEM_VERSION=${1:-8.5.4}
 OPENCODE_MEM_VERSION=${2:-latest}
 DEST_DIR=${3:-}
 
+# Show help if requested
+if [ "$CLAUDE_MEM_VERSION" = "--help" ] || [ "$CLAUDE_MEM_VERSION" = "-h" ]; then
+    echo "=========================================="
+    echo "Installing claude-mem and claude-mem-opencode from Source"
+    echo "=========================================="
+    echo ""
+    echo "Usage: bash scripts/install-from-source.sh [claude-mem-version] [claude-mem-opencode-version] [destination-folder]"
+    echo ""
+    echo "Arguments:"
+    echo "  claude-mem-version:    claude-mem version to install (default: 8.5.4)"
+    echo "  claude-mem-opencode-version: claude-mem-opencode version (default: latest)"
+    echo "  destination-folder:      Custom folder to install claude-mem-opencode (optional)"
+    echo "                           If specified, claude-mem-opencode will be built locally"
+    echo "                           instead of installed globally"
+    echo ""
+    echo "Examples:"
+    echo "  # Default: Install latest versions globally"
+    echo "  bash scripts/install-from-source.sh"
+    echo ""
+    echo "  # Install specific versions"
+    echo "  bash scripts/install-from-source.sh 8.5.3 latest"
+    echo ""
+    echo "  # Install to local folder"
+    echo "  bash scripts/install-from-source.sh latest latest /path/to/opencode/project"
+    echo ""
+    echo "  # Install to absolute path"
+    echo "  bash scripts/install-from-source.sh latest latest /home/user/my-opcode-integration"
+    echo ""
+    exit 0
+fi
+
 echo "=========================================="
 echo "Installing claude-mem and claude-mem-opencode from Source"
 echo "=========================================="
