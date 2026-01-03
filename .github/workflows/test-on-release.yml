@@ -1,0 +1,123 @@
+name: Test on claude-mem Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+    inputs:
+      claude_mem_version:
+        description: 'Specific claude-mem version to test'
+        required: false
+        type: string
+  repository_dispatch:
+    types: [claude-mem-release]
+
+jobs:
+  test-compatibility:
+    name: Test opencode-mem against claude-mem ${{ inputs.claude_mem_version || 'latest' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout opencode-mem
+        uses: actions/checkout@v4
+        
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+          
+      - name: Get claude-mem version
+        id: get-version
+        run: |
+          if [ -n "${{ inputs.claude_mem_version }}" ]; then
+            VERSION="${{ inputs.claude_mem_version }}"
+          else
+            VERSION=$(npm view claude-mem version)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Testing against claude-mem v$VERSION"
+          
+      - name: Install claude-mem v${{ steps.get-version.outputs.version }}
+        run: npm install -g claude-mem@${{ steps.get-version.outputs.version }}
+        
+      - name: Start claude-mem worker
+        run: |
+          claude-mem worker start &
+          WORKER_PID=$!
+          echo "WORKER_PID=$WORKER_PID" >> $GITHUB_ENV
+          
+          for i in {1..30}; do
+            if curl -f http://localhost:37777/api/health > /dev/null 2>&1; then
+              echo "Worker is ready"
+              break
+            fi
+            echo "Waiting for worker... ($i/30)"
+            sleep 2
+          done
+          
+      - name: Install dependencies
+        run: bun install
+        
+      - name: Build opencode-mem
+        run: bun run build
+        
+      - name: Run unit tests
+        run: bun run test:unit
+        
+      - name: Run integration tests
+        run: bun run test:integration
+        
+      - name: Run end-to-end tests
+        run: bun run test:e2e
+        env:
+          WORKER_URL: http://localhost:37777
+          
+      - name: Update COMPATIBILITY.md on success
+        if: success()
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+          echo "- claude-mem v$VERSION: ✅ Compatible ($DATE)" >> COMPATIBILITY.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add COMPATIBILITY.md
+          git commit -m "Update COMPATIBILITY.md: claude-mem v$VERSION compatible" || exit 0
+          git push
+          
+      - name: Stop claude-mem worker
+        if: always()
+        run: |
+          if [ -n "$WORKER_PID" ]; then
+            kill $WORKER_PID || true
+          fi
+          
+      - name: Create GitHub issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.get-version.outputs.version }}';
+            const runUrl = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}';
+            
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `⚠️ Compatibility Issue: claude-mem v${version}`,
+              body: `## Automated Compatibility Test Failed\n\n` +
+                    `**claude-mem Version**: v${version}\n` +
+                    `**Test Run**: ${runUrl}\n` +
+                    `**Date**: ${new Date().toISOString()}\n\n` +
+                    `## What Failed\n\n` +
+                    `The automated compatibility test failed when testing opencode-mem against claude-mem v${version}.\n\n` +
+                    `## Next Steps\n\n` +
+                    `1. Review test run logs at link above\n` +
+                    `2. Identify which API endpoints changed\n` +
+                    `3. Update opencode-mem to match new API\n` +
+                    `4. Update API_CONTRACT.md if needed\n` +
+                    `5. Mark version as compatible once fixed\n\n` +
+                    `---\n\n` +
+                    `This issue was automatically created by compatibility testing workflow.`,
+              labels: ['compatibility', 'automated', 'claude-mem-release']
+            });
+            
+            console.log(`Created issue #${issue.data.number}`);

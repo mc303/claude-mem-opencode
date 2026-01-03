@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18, 20]
+        
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+          
+      - name: Install dependencies
+        run: bun install
+        
+      - name: Build
+        run: bun run build
+        
+      - name: Run unit tests
+        run: bun run test:unit
+        
+      - name: Run integration tests
+        run: bun run test:integration
+        
+      - name: Lint
+        run: npm run lint || echo "Linting not configured"
+        
+  build-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+          
+      - name: Build library
+        run: bun run build:lib
+        
+      - name: Build bundle
+        run: bun run build:bundle
+        
+      - name: Verify dist files exist
+        run: |
+          test -f dist/index.js
+          test -f dist/index.d.ts
+          test -f dist/bundle/opencode-mem.js

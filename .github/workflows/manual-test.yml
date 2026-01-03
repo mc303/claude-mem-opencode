@@ -1,0 +1,26 @@
+name: Manual Compatibility Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      claude_mem_version:
+        description: 'Specific claude-mem version to test'
+        required: true
+        type: string
+        default: 'latest'
+
+jobs:
+  test-compatibility:
+    name: Test against claude-mem ${{ inputs.claude_mem_version }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+          
+      - name: Run manual compatibility test
+        run: |
+          bash scripts/test-against-claude-mem.sh ${{ inputs.claude_mem_version }}

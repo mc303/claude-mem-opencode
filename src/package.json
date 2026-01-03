@@ -1,0 +1,17 @@
+{
+  "name": "claude-mem-opencode-integration",
+  "version": "1.0.0",
+  "description": "Integration between claude-mem memory system and OpenCode AI agent",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "dev": "bun run index.ts",
+    "build": "bun build index.ts --outdir=dist",
+    "test": "bun test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/node": "^20.0.0"
+  }
+}
