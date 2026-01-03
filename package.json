@@ -1,9 +1,12 @@
 {
-  "name": "claude-mem-opencode",
+  "name": "@mc303/claude-mem-opencode",
   "version": "0.0.1",
   "description": "OpenCode integration for claude-mem persistent memory",
   "main": "./dist/bundle/index.js",
   "types": "./dist/bundle/index.d.ts",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "exports": {
     ".": {
       "import": "./dist/bundle/index.js",
