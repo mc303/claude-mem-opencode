@@ -1,17 +1,132 @@
 # Installation Guide
 
+## Important Notice
+
+**The published claude-mem package (v3.9.16) does not currently support the HTTP worker API required by claude-mem-opencode.**
+
+This integration is based on a development version of claude-mem with a worker API that is not yet available in the published npm package.
+
+### Current Status
+
+- ✅ Unit tests: Pass (54/54) - No external dependencies required
+- ⏸️ Integration tests: Requires claude-mem worker (not available in published version)
+- ⏸️ E2E tests: Requires claude-mem worker (not available in published version)
+- ⏸️ Manual testing: Requires claude-mem worker (not available in published version)
+
+### What Works Now
+
+You can use the core components without a worker:
+
+```typescript
+import { PrivacyTagStripper } from 'claude-mem-opencode'
+import { SessionMapper } from 'claude-mem-opencode'
+import { ProjectNameExtractor } from 'claude-mem-opencode'
+
+// Privacy tag stripping (no worker needed)
+const stripper = new PrivacyTagStripper()
+const clean = stripper.stripFromText('<private>secret</private> data')
+
+// Session mapping (no worker needed)
+const mapper = new SessionMapper()
+mapper.mapOpenCodeToClaudeMem('session-123', 1)
+
+// Project name extraction (no worker needed)
+const extractor = new ProjectNameExtractor()
+const project = extractor.extract('/home/user/my-project')
+```
+
+---
+
 ## Option 1: Global npm Installation
 
 ### Prerequisites
 
 - Node.js >= 18.0.0
-- claude-mem >= 8.5.0 (required for memory features)
+- claude-mem (when worker API becomes available)
 
-### Install claude-mem (required)
+### Install claude-mem (Optional)
 
 ```bash
-npm install -g claude-mem
+# Only install when worker API becomes available
+# npm install -g claude-mem
 ```
+
+### Install claude-mem-opencode
+
+```bash
+npm install -g claude-mem-opencode
+```
+
+Or with automated script:
+```bash
+bash scripts/install.sh
+```
+
+### Verification
+
+```bash
+claude-mem-opencode --version
+```
+
+---
+
+## Option 2: Bundle for OpenCode
+
+### Prerequisites
+
+```bash
+# Install dependencies
+npm install
+```
+
+### Build Bundle
+
+```bash
+npm run bundle
+```
+
+### Integrate with OpenCode
+
+1. Copy `dist/bundle/*` to your OpenCode project
+2. Import in your code:
+   ```typescript
+   import { ClaudeMemIntegration } from './claude-mem-opencode.js'
+   ```
+3. **Note**: Integration will initialize but memory features won't work without claude-mem worker
+
+---
+
+## Future Worker Setup (When Available)
+
+Once claude-mem worker API is published, you'll be able to:
+
+```bash
+# Start worker
+claude-mem worker start
+
+# Check status
+claude-mem worker status
+
+# View logs
+claude-mem worker logs
+
+# Stop worker
+claude-mem worker stop
+```
+
+The worker will run on `http://localhost:37777` by default.
+
+---
+
+## Quick Start (Unit Tests Only)
+
+For now, test the core functionality with unit tests:
+
+```bash
+npm run test:unit
+```
+
+All 54 unit tests pass and don't require external dependencies.
 
 Verify installation:
 ```bash

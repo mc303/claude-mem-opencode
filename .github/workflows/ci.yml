@@ -30,11 +30,12 @@ jobs:
       - name: Run unit tests
         run: bun run test:unit
 
-      - name: Run integration tests
+      - name: Skip integration/E2E tests
         run: |
-          # Skip integration tests in CI - they require claude-mem worker
-          echo "Skipping integration tests - require claude-mem worker running"
-        
+          # Integration and E2E tests require claude-mem worker API
+          # Worker API is not yet available in published claude-mem package
+          echo "Skipping integration/E2E tests - worker API not available"
+
       - name: Lint
         run: npm run lint || echo "Linting not configured"
         
