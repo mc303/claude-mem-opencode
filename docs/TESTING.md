@@ -1254,10 +1254,75 @@ bun run test:unit
 
 ---
 
+## 8. Clean Installation Guide
+
+### Remove all npm packages (clean slate)
+
+```bash
+# Use the cleanup script
+bash scripts/cleanup.sh
+
+# Or manually:
+npm uninstall -g claude-mem
+npm uninstall -g @thedotmack/claude-mem
+npm uninstall -g claude-mem-opencode
+
+# Verify all packages are removed
+npm list -g --depth=0 | grep -E "claude-mem|opencode"
+# Should output nothing
+```
+
+### Install from source (clean installation)
+
+```bash
+# Use the install-from-source script
+bash scripts/install-from-source.sh
+
+# Or manually:
+# Install claude-mem from source
+git clone https://github.com/thedotmack/claude-mem.git
+cd claude-mem
+bun install
+bun run build
+npm install -g .
+
+# Install claude-mem-opencode from source
+cd /path/to/claude-mem-opencode
+bun install
+bun run build
+npm install -g .
+
+# Verify installations
+claude-mem --version
+# Should show: 8.5.4 or later
+
+claude-mem-opencode --version
+# Should show: 0.0.1
+```
+
+### Testing source installation workflow
+
+```bash
+# 1. Start with clean environment
+bash scripts/cleanup.sh
+
+# 2. Install from source
+bash scripts/install-from-source.sh
+```
+
+The `install-from-source.sh` script handles:
+- Cloning claude-mem from GitHub
+- Building and installing both packages
+- Verifying installations
+- Testing worker startup
+- Running unit tests
+
+---
+
 ## Additional Resources
 
 - [Installation Guide](INSTALLATION.md)
 - [API Contract](API_CONTRACT.md)
 - [README](../README.md)
-- [Integration Documentation](../src/integration/API-REFERENCE.md)
+- [OpenCode Documentation](https://github.com/sst/opencode)
 - [OpenCode Documentation](https://github.com/sst/opencode)
