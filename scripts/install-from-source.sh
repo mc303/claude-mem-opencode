@@ -287,7 +287,11 @@ else
 fi
 echo ""
 echo "Next steps:"
-echo "  1. Start the worker: bun plugin/scripts/worker-service.cjs start"
-echo "  2. Run tests: bun test"
+echo "  1. Start the worker: cd $CLAUDE_MEM_DIR && bun plugin/scripts/worker-service.cjs start"
+if [ -n "$DEST_DIR" ]; then
+    echo "  2. Run tests: cd $OPENCODE_DIR && bun test"
+else
+    echo "  2. Run tests: bun test"
+fi
 echo "  3. Use in your project: import { OpencodeIntegration } from 'claude-mem-opencode'"
 echo ""
