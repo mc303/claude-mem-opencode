@@ -29,9 +29,11 @@ jobs:
         
       - name: Run unit tests
         run: bun run test:unit
-        
+
       - name: Run integration tests
-        run: bun run test:integration
+        run: |
+          # Skip integration tests in CI - they require claude-mem worker
+          echo "Skipping integration tests - require claude-mem worker running"
         
       - name: Lint
         run: npm run lint || echo "Linting not configured"
@@ -54,6 +56,6 @@ jobs:
         
       - name: Verify dist files exist
         run: |
-          test -f dist/index.js
-          test -f dist/index.d.ts
+          test -f dist/bundle/index.js
+          test -f dist/bundle/index.d.ts
           test -f dist/bundle/opencode-mem.js
