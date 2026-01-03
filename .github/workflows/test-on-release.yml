@@ -14,11 +14,11 @@ on:
 
 jobs:
   test-compatibility:
-    name: Test opencode-mem against claude-mem ${{ inputs.claude_mem_version || 'latest' }}
+    name: Test claude-mem-opencode against claude-mem ${{ inputs.claude_mem_version || 'latest' }}
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout opencode-mem
+      - name: Checkout claude-mem-opencode
         uses: actions/checkout@v4
         
       - name: Setup Bun
@@ -58,7 +58,7 @@ jobs:
       - name: Install dependencies
         run: bun install
         
-      - name: Build opencode-mem
+      - name: Build claude-mem-opencode
         run: bun run build
         
       - name: Run unit tests
@@ -66,23 +66,11 @@ jobs:
         
       - name: Run integration tests
         run: bun run test:integration
-        
+
       - name: Run end-to-end tests
         run: bun run test:e2e
         env:
           WORKER_URL: http://localhost:37777
-          
-      - name: Update COMPATIBILITY.md on success
-        if: success()
-        run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          DATE=$(date +%Y-%m-%d)
-          echo "- claude-mem v$VERSION: ✅ Compatible ($DATE)" >> COMPATIBILITY.md
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add COMPATIBILITY.md
-          git commit -m "Update COMPATIBILITY.md: claude-mem v$VERSION compatible" || exit 0
-          git push
           
       - name: Stop claude-mem worker
         if: always()
@@ -108,7 +96,7 @@ jobs:
                     `**Test Run**: ${runUrl}\n` +
                     `**Date**: ${new Date().toISOString()}\n\n` +
                     `## What Failed\n\n` +
-                    `The automated compatibility test failed when testing opencode-mem against claude-mem v${version}.\n\n` +
+                    `The automated compatibility test failed when testing claude-mem-opencode against claude-mem v${version}.\n\n` +
                     `## Next Steps\n\n` +
                     `1. Review test run logs at link above\n` +
                     `2. Identify which API endpoints changed\n` +
