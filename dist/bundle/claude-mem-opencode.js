@@ -1,36 +1,43 @@
-import { createRequire } from "node:module";
-var __create = Object.create;
-var __getProtoOf = Object.getPrototypeOf;
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __toESM = (mod, isNodeMode, target) => {
-  target = mod != null ? __create(__getProtoOf(mod)) : {};
-  const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-  for (let key of __getOwnPropNames(mod))
-    if (!__hasOwnProp.call(to, key))
-      __defProp(to, key, {
-        get: () => mod[key],
-        enumerable: true
-      });
-  return to;
-};
-var __require = /* @__PURE__ */ createRequire(import.meta.url);
-
 // src/integration/worker-client.ts
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+var PLATFORM_SOURCE = "opencode";
+var LEGACY_WORKER_PORT = 37777;
+function resolveWorkerBase() {
+  const url = process.env.CLAUDE_MEM_WORKER_URL;
+  if (url)
+    return url.replace(/\/$/, "");
+  try {
+    const pidFile = join(homedir(), ".claude-mem", "worker.pid");
+    if (existsSync(pidFile)) {
+      const parsed = JSON.parse(readFileSync(pidFile, "utf8"));
+      if (typeof parsed.port === "number") {
+        return `http://127.0.0.1:${parsed.port}`;
+      }
+    }
+  } catch {}
+  const port = process.env.CLAUDE_MEM_WORKER_PORT;
+  if (port)
+    return `http://127.0.0.1:${port}`;
+  return `http://127.0.0.1:${LEGACY_WORKER_PORT}`;
+}
+
 class WorkerClient {
   baseUrl;
   timeout = 30000;
-  constructor(portOrUrl = 37777) {
+  constructor(portOrUrl) {
     if (typeof portOrUrl === "string") {
-      this.baseUrl = portOrUrl;
-    } else {
+      this.baseUrl = portOrUrl.replace(/\/$/, "");
+    } else if (typeof portOrUrl === "number") {
       this.baseUrl = `http://127.0.0.1:${portOrUrl}`;
+    } else {
+      this.baseUrl = resolveWorkerBase();
     }
   }
   getPort() {
-    const match = this.baseUrl.match(/:(\d+)$/);
-    return match ? parseInt(match[1]) : 37777;
+    const match = this.baseUrl.match(/:(\d+)(?:\/|$)/);
+    return match ? parseInt(match[1]) : LEGACY_WORKER_PORT;
   }
   getWorkerUrl() {
     return this.baseUrl;
@@ -64,45 +71,69 @@ class WorkerClient {
   async readinessCheck() {
     try {
       const response = await fetch(`${this.baseUrl}/api/readiness`);
-      return response.ok;
+      if (response.ok)
+        return true;
+    } catch {}
+    try {
+      const health = await this.checkHealth();
+      return health.status === "ok";
     } catch {
       return false;
     }
   }
-  async initSession(request) {
-    const response = await fetch(`${this.baseUrl}/api/sessions/init`, {
+  async postJson(path, body) {
+    const response = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(this.timeout)
     });
     if (!response.ok) {
-      throw new Error(`Session init failed: ${response.status} ${response.statusText}`);
+      const text = await response.text().catch(() => "");
+      throw new Error(`Request to ${path} failed: ${response.status} ${response.statusText}${text ? ` - ${text}` : ""}`);
     }
-    return response.json();
+    const ct = response.headers.get("content-type") ?? "";
+    return ct.includes("application/json") ? response.json() : null;
+  }
+  async initSession(request) {
+    const body = {
+      ...request,
+      platformSource: request.platformSource ?? PLATFORM_SOURCE
+    };
+    return this.postJson("/api/sessions/init", body);
   }
   async addObservation(request) {
-    const response = await fetch(`${this.baseUrl}/api/sessions/observations`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-      signal: AbortSignal.timeout(this.timeout)
+    const body = {
+      contentSessionId: request.contentSessionId,
+      tool_name: request.tool_name,
+      tool_input: request.tool_input ?? {},
+      tool_response: request.tool_response ?? "",
+      tool_use_id: request.tool_use_id ?? "",
+      cwd: request.cwd,
+      platformSource: request.platformSource ?? PLATFORM_SOURCE
+    };
+    return this.postJson("/api/sessions/observations", body);
+  }
+  async summarizeSession(contentSessionId, options) {
+    return this.postJson("/api/sessions/summarize", {
+      contentSessionId,
+      platformSource: PLATFORM_SOURCE,
+      cwd: options?.cwd
     });
-    if (!response.ok) {
-      throw new Error(`Observation add failed: ${response.status} ${response.statusText}`);
-    }
+  }
+  async sessionEnd(contentSessionId, options) {
+    return this.postJson("/api/sessions/session-end", {
+      contentSessionId,
+      platformSource: PLATFORM_SOURCE,
+      reason: options?.reason,
+      cwd: options?.cwd
+    });
   }
   async completeSession(sessionDbId) {
-    const response = await fetch(`${this.baseUrl}/sessions/${sessionDbId}/complete`, {
-      method: "POST",
-      signal: AbortSignal.timeout(this.timeout)
-    });
-    if (!response.ok) {
-      throw new Error(`Session complete failed: ${response.status} ${response.statusText}`);
-    }
+    return this.summarizeSession(String(sessionDbId));
   }
   async getProjectContext(project) {
-    const url = `${this.baseUrl}/api/context/inject?project=${encodeURIComponent(project)}`;
+    const url = `${this.baseUrl}/api/context/inject?project=${encodeURIComponent(project)}&platformSource=${PLATFORM_SOURCE}`;
     const response = await fetch(url, {
       signal: AbortSignal.timeout(this.timeout)
     });
@@ -254,128 +285,142 @@ class PrivacyTagStripper {
 }
 
 // src/integration/event-listeners.ts
-var Bus = null;
-var Session = null;
-var MessageV2 = null;
-try {
-  const busModule = await import("@/bus");
-  Bus = busModule.Bus;
-  const sessionModule = await import("@/session");
-  Session = sessionModule.Session;
-  MessageV2 = sessionModule.MessageV2;
-} catch (error) {
-  console.log("[EVENT_LISTENERS] OpenCode APIs not available - running in standalone mode");
-}
+var SKIP_TOOLS = new Set(["todowrite", "todoread"]);
+var MAX_FIELD_CHARS = 50000;
 
 class EventListeners {
   workerClient;
   sessionMapper;
   projectNameExtractor;
   privacyStripper;
-  promptNumberTracker = new Map;
+  dbIds = new Map;
+  cwds = new Map;
+  skipped = new Set;
+  queues = new Map;
   constructor(workerClient) {
     this.workerClient = workerClient;
     this.sessionMapper = new SessionMapper;
     this.projectNameExtractor = new ProjectNameExtractor;
     this.privacyStripper = new PrivacyTagStripper;
   }
-  async initialize() {
-    if (!Bus || !Session || !MessageV2) {
-      console.log("[EVENT_LISTENERS] OpenCode APIs not available - event listeners will be initialized via manual calls");
-      return;
-    }
-    console.log("[EVENT_LISTENERS] Initializing OpenCode event listeners...");
-    Bus.subscribe(Session.Event.Created, this.handleSessionCreated.bind(this));
-    Bus.subscribe(MessageV2.Event.PartUpdated, this.handleMessagePartUpdated.bind(this));
-    Bus.subscribe(Session.Event.Updated, this.handleSessionUpdated.bind(this));
-    console.log("[EVENT_LISTENERS] Subscribed to OpenCode Bus events");
+  async initialize() {}
+  enqueue(sessionId, work) {
+    const next = (this.queues.get(sessionId) ?? Promise.resolve()).then(work).catch(() => {});
+    this.queues.set(sessionId, next);
   }
-  async handleSessionCreated(event) {
-    const { info } = event.properties;
-    const project = this.projectNameExtractor.extract(info.directory);
-    const openCodeSessionId = info.id;
-    const title = info.title || "New session";
-    console.log(`[EVENT_LISTENERS] Session created: ${openCodeSessionId}`);
-    try {
-      const response = await this.workerClient.initSession({
-        contentSessionId: openCodeSessionId,
-        project,
-        prompt: title
-      });
-      if (response.skipped) {
-        console.log(`[EVENT_LISTENERS] Session marked as private: ${openCodeSessionId}`);
-        console.log(`[EVENT_LISTENERS] Reason: ${response.reason}`);
-        return;
+  projectFor(sessionId) {
+    const cwd = this.cwds.get(sessionId) ?? process.cwd();
+    return this.projectNameExtractor.extract(cwd);
+  }
+  clip(text) {
+    if (text.length <= MAX_FIELD_CHARS)
+      return text;
+    return `${text.slice(0, MAX_FIELD_CHARS)}
+…[truncated ${text.length - MAX_FIELD_CHARS} chars]`;
+  }
+  strip(text) {
+    return this.privacyStripper.stripFromText(text);
+  }
+  async handlePrompt(sessionId, promptText, cwd) {
+    if (cwd)
+      this.cwds.set(sessionId, cwd);
+    this.enqueue(sessionId, async () => {
+      try {
+        const project = this.projectFor(sessionId);
+        const response = await this.workerClient.initSession({
+          contentSessionId: sessionId,
+          project,
+          prompt: this.clip(this.strip(promptText)) || "(no text)",
+          cwd: this.cwds.get(sessionId),
+          platformSource: "opencode"
+        });
+        if (response.skipped) {
+          this.skipped.add(sessionId);
+          return;
+        }
+        this.skipped.delete(sessionId);
+        if (typeof response.sessionDbId === "number") {
+          this.dbIds.set(sessionId, response.sessionDbId);
+          this.sessionMapper.mapOpenCodeToClaudeMem(sessionId, response.sessionDbId);
+        }
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] init failed for ${sessionId}:`, error);
       }
-      this.sessionMapper.mapOpenCodeToClaudeMem(openCodeSessionId, response.sessionDbId);
-      this.promptNumberTracker.set(openCodeSessionId, response.promptNumber);
-      console.log(`[EVENT_LISTENERS] Mapped ${openCodeSessionId} → ${response.sessionDbId}`);
-      console.log(`[EVENT_LISTENERS] Project: ${project}, Prompt #${response.promptNumber}`);
-    } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to initialize session ${openCodeSessionId}:`, error);
-    }
+    });
   }
-  async handleMessagePartUpdated(event) {
-    const { part } = event.properties;
-    if (part.type !== "tool_call") {
+  async handleToolUse(sessionId, tool, input, response, toolUseId, cwd) {
+    if (SKIP_TOOLS.has(String(tool).toLowerCase()))
       return;
-    }
-    const toolName = part.name;
-    const toolArgs = part.args;
-    const toolResult = part.result || "";
-    const sessionId = part.sessionID;
-    const cwd = part.cwd || process.cwd();
-    const claudeMemSessionId = this.sessionMapper.getClaudeMemSessionId(sessionId);
-    if (!claudeMemSessionId) {
-      console.log(`[EVENT_LISTENERS] No claude-mem session for: ${sessionId}`);
-      return;
-    }
-    const promptNumber = this.getPromptNumber(sessionId);
-    console.log(`[EVENT_LISTENERS] Tool usage: ${sessionId} - ${toolName}`);
+    if (cwd)
+      this.cwds.set(sessionId, cwd);
+    this.enqueue(sessionId, async () => {
+      if (this.skipped.has(sessionId))
+        return;
+      try {
+        let toolInput = input;
+        if (typeof input === "string") {
+          try {
+            toolInput = JSON.parse(this.clip(this.strip(input)));
+          } catch {
+            toolInput = { raw: this.clip(this.strip(input)) };
+          }
+        } else {
+          toolInput = this.privacyStripper.stripFromJson(input ?? {});
+        }
+        await this.workerClient.addObservation({
+          contentSessionId: sessionId,
+          tool_name: String(tool),
+          tool_input: toolInput,
+          tool_response: this.clip(this.strip(response ?? "")),
+          tool_use_id: toolUseId ?? "",
+          cwd: this.cwds.get(sessionId),
+          platformSource: "opencode"
+        });
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] observation failed for ${sessionId} (${tool}):`, error);
+      }
+    });
+  }
+  async handleSummarize(sessionId) {
+    this.enqueue(sessionId, async () => {
+      if (this.skipped.has(sessionId))
+        return;
+      try {
+        await this.workerClient.summarizeSession(sessionId, { cwd: this.cwds.get(sessionId) });
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] summarize failed for ${sessionId}:`, error);
+      }
+    });
+  }
+  async handleSessionEnd(sessionId, reason) {
+    this.enqueue(sessionId, async () => {
+      try {
+        await this.workerClient.sessionEnd(sessionId, {
+          reason,
+          cwd: this.cwds.get(sessionId)
+        });
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] session-end failed for ${sessionId}:`, error);
+      } finally {
+        this.queues.delete(sessionId);
+        this.skipped.delete(sessionId);
+        this.cwds.delete(sessionId);
+        this.dbIds.delete(sessionId);
+        this.sessionMapper.unmapSession(sessionId);
+      }
+    });
+  }
+  async getContext(sessionId) {
+    const project = this.projectFor(sessionId);
     try {
-      const strippedArgs = this.privacyStripper.stripFromJson(toolArgs);
-      const strippedResult = this.privacyStripper.stripFromText(toolResult);
-      await this.workerClient.addObservation({
-        sessionDbId: claudeMemSessionId,
-        promptNumber,
-        toolName,
-        toolInput: strippedArgs,
-        toolOutput: strippedResult,
-        cwd,
-        timestamp: Date.now()
-      });
-      console.log(`[EVENT_LISTENERS] Added observation: ${claudeMemSessionId} - ${toolName}`);
+      return await this.workerClient.getProjectContext(project);
     } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to add observation:`, error);
+      console.warn(`[CLAUDE_MEM] context fetch failed for ${project}:`, error);
+      return "";
     }
   }
-  async handleSessionUpdated(event) {
-    const { info } = event.properties;
-    if (!info.time.archived) {
-      return;
-    }
-    const openCodeSessionId = info.id;
-    console.log(`[EVENT_LISTENERS] Session archived: ${openCodeSessionId}`);
-    const claudeMemSessionId = this.sessionMapper.getClaudeMemSessionId(openCodeSessionId);
-    if (!claudeMemSessionId) {
-      console.log(`[EVENT_LISTENERS] No claude-mem session for: ${openCodeSessionId}`);
-      return;
-    }
-    try {
-      await this.workerClient.completeSession(claudeMemSessionId);
-      console.log(`[EVENT_LISTENERS] Completed session: ${claudeMemSessionId}`);
-      this.sessionMapper.unmapSession(openCodeSessionId);
-      this.promptNumberTracker.delete(openCodeSessionId);
-    } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to complete session:`, error);
-    }
-  }
-  getPromptNumber(sessionId) {
-    return this.promptNumberTracker.get(sessionId) ?? 1;
-  }
-  incrementPromptNumber(sessionId) {
-    const current = this.promptNumberTracker.get(sessionId) ?? 1;
-    this.promptNumberTracker.set(sessionId, current + 1);
+  getClaudeMemSessionId(sessionId) {
+    return this.dbIds.get(sessionId) ?? this.sessionMapper.getClaudeMemSessionId(sessionId);
   }
 }
 
@@ -417,11 +462,11 @@ ${context}
 
 // src/integration/utils/logger.ts
 var LogLevel;
-((LogLevel2) => {
-  LogLevel2[LogLevel2["DEBUG"] = 0] = "DEBUG";
-  LogLevel2[LogLevel2["INFO"] = 1] = "INFO";
-  LogLevel2[LogLevel2["WARN"] = 2] = "WARN";
-  LogLevel2[LogLevel2["ERROR"] = 3] = "ERROR";
+((LogLevel) => {
+  LogLevel[LogLevel["DEBUG"] = 0] = "DEBUG";
+  LogLevel[LogLevel["INFO"] = 1] = "INFO";
+  LogLevel[LogLevel["WARN"] = 2] = "WARN";
+  LogLevel[LogLevel["ERROR"] = 3] = "ERROR";
 })(LogLevel ||= {});
 
 class Logger {
@@ -452,8 +497,11 @@ class ClaudeMemIntegration {
   logger;
   initialized = false;
   memoryAvailable = false;
-  constructor(workerUrl = "http://localhost:37777") {
-    this.workerClient = new WorkerClient(workerUrl.includes("localhost") ? parseInt(workerUrl.split(":")[1] || "37777") : 37777);
+  inject;
+  constructor(options = {}) {
+    const opts = typeof options === "string" ? { workerUrl: options } : options;
+    this.workerClient = new WorkerClient(opts.workerUrl);
+    this.inject = opts.inject === true;
     this.eventListeners = new EventListeners(this.workerClient);
     this.contextInjector = new ContextInjector(this.workerClient);
     this.projectNameExtractor = new ProjectNameExtractor;
@@ -466,10 +514,10 @@ class ClaudeMemIntegration {
     }
     try {
       console.log("[CLAUDE_MEM] Initializing claude-mem integration...");
-      console.log(`[CLAUDE_MEM] Worker port: ${this.workerClient.getPort() || "37777"}`);
+      console.log(`[CLAUDE_MEM] Worker: ${this.workerClient.getWorkerUrl()}`);
       const ready = await this.workerClient.waitForReady(30000);
       if (!ready) {
-        throw new Error("Worker service not ready after 30s. Is worker running?");
+        throw new Error(`Worker not ready at ${this.workerClient.getWorkerUrl()}. Is the claude-mem worker running?`);
       }
       console.log("[CLAUDE_MEM] Worker service is ready");
       await this.eventListeners.initialize();
@@ -489,7 +537,8 @@ class ClaudeMemIntegration {
       initialized: this.initialized,
       workerReady,
       currentProject: this.projectNameExtractor.getCurrentProject(),
-      workerUrl: `http://localhost:${this.workerClient.getPort() || "37777"}`
+      workerUrl: this.workerClient.getWorkerUrl(),
+      inject: this.inject
     };
   }
   async getProjectContext(project) {
@@ -528,15 +577,15 @@ class ClaudeMemIntegration {
 var defaultInstance = new ClaudeMemIntegration;
 var integration_default = ClaudeMemIntegration;
 export {
-  defaultInstance,
-  integration_default as default,
-  WorkerClient,
-  SessionMapper,
-  ProjectNameExtractor,
-  PrivacyTagStripper,
-  Logger,
-  LogLevel,
-  EventListeners,
+  ClaudeMemIntegration,
   ContextInjector,
-  ClaudeMemIntegration
+  EventListeners,
+  LogLevel,
+  Logger,
+  PrivacyTagStripper,
+  ProjectNameExtractor,
+  SessionMapper,
+  WorkerClient,
+  integration_default as default,
+  defaultInstance
 };

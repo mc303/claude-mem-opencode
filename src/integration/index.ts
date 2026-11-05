@@ -3,13 +3,23 @@
  * Initializes worker client, event listeners, and context injection
  */
 
-import { WorkerClient } from './worker-client.js'
+import { WorkerClient, resolveWorkerBase } from './worker-client.js'
 import { EventListeners } from './event-listeners.js'
 import { ContextInjector } from './context-injector.js'
 import { SessionMapper } from './session-mapper.js'
 import { ProjectNameExtractor } from './utils/project-name.js'
 import { PrivacyTagStripper } from './utils/privacy.js'
 import { Logger, LogLevel } from './utils/logger.js'
+
+export interface ClaudeMemIntegrationOptions {
+  /**
+   * Explicit worker base URL. When omitted the port is auto-detected from
+   * `~/.claude-mem/worker.pid` / `CLAUDE_MEM_WORKER_PORT` / `CLAUDE_MEM_WORKER_URL`.
+   */
+  workerUrl?: string
+  /** Inject relevant memories into new sessions (off by default). */
+  inject?: boolean
+}
 
 export class ClaudeMemIntegration {
   private workerClient: WorkerClient
@@ -19,13 +29,17 @@ export class ClaudeMemIntegration {
   private logger: Logger
   private initialized: boolean = false
   private memoryAvailable: boolean = false
+  private inject: boolean
 
-  constructor(workerUrl: string = 'http://localhost:37777') {
-    this.workerClient = new WorkerClient(
-      workerUrl.includes('localhost') ?
-        parseInt(workerUrl.split(':')[1] || '37777') :
-        37777
-    )
+  constructor(options: string | ClaudeMemIntegrationOptions = {}) {
+    const opts: ClaudeMemIntegrationOptions = typeof options === 'string'
+      ? { workerUrl: options }
+      : options
+
+    // A missing worker is fine at construction time; readiness is checked in
+    // initialize(). Port resolution happens here so the URL is logged early.
+    this.workerClient = new WorkerClient(opts.workerUrl)
+    this.inject = opts.inject === true
     this.eventListeners = new EventListeners(this.workerClient)
     this.contextInjector = new ContextInjector(this.workerClient)
     this.projectNameExtractor = new ProjectNameExtractor()
@@ -33,7 +47,11 @@ export class ClaudeMemIntegration {
   }
 
   /**
-   * Initialize integration
+   * Initialize integration.
+   *
+   * Checks that the worker is reachable. Note that, on 15.x, the actual
+   * capture is driven by the OpenCode plugin (see src/plugin.ts); this method
+   * is for the library / manual-usage path.
    */
   async initialize(): Promise<void> {
     if (this.initialized) {
@@ -43,18 +61,20 @@ export class ClaudeMemIntegration {
 
     try {
       console.log('[CLAUDE_MEM] Initializing claude-mem integration...')
-      console.log(`[CLAUDE_MEM] Worker port: ${this.workerClient.getPort() || '37777'}`)
+      console.log(`[CLAUDE_MEM] Worker: ${this.workerClient.getWorkerUrl()}`)
 
       const ready = await this.workerClient.waitForReady(30000)
 
       if (!ready) {
-        throw new Error('Worker service not ready after 30s. Is worker running?')
+        throw new Error(
+          `Worker not ready at ${this.workerClient.getWorkerUrl()}. Is the claude-mem worker running?`
+        )
       }
 
       console.log('[CLAUDE_MEM] Worker service is ready')
 
       await this.eventListeners.initialize()
-      
+
       this.initialized = true
       this.memoryAvailable = true
       console.log('[CLAUDE_MEM] Integration initialized successfully')
@@ -74,6 +94,7 @@ export class ClaudeMemIntegration {
     workerReady: boolean
     workerUrl: string
     currentProject: string
+    inject: boolean
   }> {
     const workerReady = this.memoryAvailable && 
                         (await this.workerClient.healthCheck())
@@ -82,7 +103,8 @@ export class ClaudeMemIntegration {
       initialized: this.initialized,
       workerReady,
       currentProject: this.projectNameExtractor.getCurrentProject(),
-      workerUrl: `http://localhost:${this.workerClient.getPort() || '37777'}`
+      workerUrl: this.workerClient.getWorkerUrl(),
+      inject: this.inject
     }
   }
 

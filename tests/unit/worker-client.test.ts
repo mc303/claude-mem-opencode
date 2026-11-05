@@ -28,11 +28,15 @@ describe('WorkerClient', () => {
         }
         
         if (url.pathname === '/api/sessions/observations' && req.method === 'POST') {
-          return new Response(null, { status: 200 })
+          return Response.json({ status: 'queued' })
         }
 
-        if (url.pathname.match(/^\/sessions\/\d+\/complete$/) && req.method === 'POST') {
-          return new Response(null, { status: 200 })
+        if (url.pathname === '/api/sessions/summarize' && req.method === 'POST') {
+          return Response.json({ status: 'queued' })
+        }
+
+        if (url.pathname === '/api/sessions/session-end' && req.method === 'POST') {
+          return Response.json({ status: 'accepted' })
         }
 
         if (url.pathname === '/api/context/inject' && url.searchParams.get('project') === 'test-project') {
@@ -94,26 +98,41 @@ describe('WorkerClient', () => {
   })
 
   describe('addObservation', () => {
-    it('should add observation', async () => {
+    it('should add observation using 15.x field names', async () => {
       const result = await client.addObservation({
-        sessionDbId: 1,
-        promptNumber: 1,
-        toolName: 'bash',
-        toolInput: { command: 'test' },
-        toolOutput: 'output',
-        cwd: '/test',
-        timestamp: Date.now()
+        contentSessionId: 'test-session',
+        tool_name: 'bash',
+        tool_input: { command: 'test' },
+        tool_response: 'output',
+        tool_use_id: 'toolu-1',
+        cwd: '/test'
       })
 
-      expect(result).toBeUndefined()
+      expect(result).toEqual({ status: 'queued' })
     })
   })
 
-  describe('completeSession', () => {
-    it('should complete session', async () => {
-      const result = await client.completeSession(123)
+  describe('summarizeSession', () => {
+    it('should summarize session', async () => {
+      const result = await client.summarizeSession('test-session')
 
-      expect(result).toBeUndefined()
+      expect(result).toEqual({ status: 'queued' })
+    })
+  })
+
+  describe('sessionEnd', () => {
+    it('should end session', async () => {
+      const result = await client.sessionEnd('test-session', { reason: 'test' })
+
+      expect(result).toEqual({ status: 'accepted' })
+    })
+  })
+
+  describe('completeSession (legacy alias)', () => {
+    it('should map to summarize on 15.x', async () => {
+      const result = await client.completeSession('test-session')
+
+      expect(result).toEqual({ status: 'queued' })
     })
   })
 

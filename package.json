@@ -1,7 +1,7 @@
 {
   "name": "claude-mem-opencode",
-  "version": "0.0.2",
-  "description": "OpenCode integration for claude-mem persistent memory",
+  "version": "0.1.0",
+  "description": "OpenCode integration for claude-mem persistent memory (15.x worker API)",
   "main": "./dist/bundle/index.js",
   "types": "./dist/bundle/index.d.ts",
   "exports": {
@@ -36,7 +36,7 @@
     "typescript": "^5.3.0"
   },
   "peerDependencies": {
-    "claude-mem": ">=8.5.4"
+    "claude-mem": ">=15.0.0"
   },
   "peerDependenciesMeta": {
     "claude-mem": {
