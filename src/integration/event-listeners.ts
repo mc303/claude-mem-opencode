@@ -1,6 +1,16 @@
 /**
- * Subscribe to OpenCode Bus events and bridge to claude-mem
- * Adapted to use real OpenCode APIs (with fallback for testing)
+ * Bridge OpenCode sessions to claude-mem (15.x worker API).
+ *
+ * This module intentionally does NOT import OpenCode internals (`@/bus`,
+ * `@/session`). Those paths are private to the OpenCode package and cannot be
+ * resolved from a plugin, so importing them silently disabled the whole
+ * integration (the old behavior recorded nothing). Instead, the handler
+ * methods here are plain, framework-agnostic entry points that the plugin
+ * (`src/plugin.ts`) calls from OpenCode's own plugin hooks
+ * (`tool.execute.after`, session lifecycle events).
+ *
+ * All work is best-effort: a missing or slow worker never throws out to
+ * OpenCode.
  */
 
 import { WorkerClient } from './worker-client.js'
@@ -8,26 +18,25 @@ import { SessionMapper } from './session-mapper.js'
 import { ProjectNameExtractor } from './utils/project-name.js'
 import { PrivacyTagStripper } from './utils/privacy.js'
 
-let Bus: any = null
-let Session: any = null
-let MessageV2: any = null
+/** Tools that carry no useful memory signal. */
+const SKIP_TOOLS = new Set(['todowrite', 'todoread'])
 
-try {
-  const busModule = await import('@/bus')
-  Bus = busModule.Bus
-  const sessionModule = await import('@/session')
-  Session = sessionModule.Session
-  MessageV2 = sessionModule.MessageV2
-} catch (error) {
-  console.log('[EVENT_LISTENERS] OpenCode APIs not available - running in standalone mode')
-}
+/** Hard cap on a single observation field to avoid oversized payloads. */
+const MAX_FIELD_CHARS = 50_000
 
 export class EventListeners {
   private workerClient: WorkerClient
   private sessionMapper: SessionMapper
   private projectNameExtractor: ProjectNameExtractor
   private privacyStripper: PrivacyTagStripper
-  private promptNumberTracker: Map<string, number> = new Map()
+  /** OpenCode session ID -> claude-mem sessionDbId. */
+  private dbIds = new Map<string, number>()
+  /** OpenCode session ID -> working directory. */
+  private cwds = new Map<string, string>()
+  /** OpenCode session IDs the worker marked as private (skip capture). */
+  private skipped = new Set<string>()
+  /** Per-session FIFO so init always lands before that session's observations. */
+  private queues = new Map<string, Promise<void>>()
 
   constructor(workerClient: WorkerClient) {
     this.workerClient = workerClient
@@ -37,160 +46,174 @@ export class EventListeners {
   }
 
   /**
-   * Subscribe to all relevant OpenCode events using real Bus API
+   * Keep for backward compatibility with `integration.initialize()`.
+   *
+   * No-op now that event capture is driven by the plugin's OpenCode hooks.
    */
   async initialize(): Promise<void> {
-    if (!Bus || !Session || !MessageV2) {
-      console.log('[EVENT_LISTENERS] OpenCode APIs not available - event listeners will be initialized via manual calls')
-      return
-    }
+    // No-op: handlers are invoked by the plugin (see src/plugin.ts).
+  }
 
-    console.log('[EVENT_LISTENERS] Initializing OpenCode event listeners...')
+  private enqueue(sessionId: string, work: () => Promise<void>): void {
+    const next = (this.queues.get(sessionId) ?? Promise.resolve())
+      .then(work)
+      .catch(() => {})
+    this.queues.set(sessionId, next)
+  }
 
-    Bus.subscribe(Session.Event.Created, this.handleSessionCreated.bind(this))
-    Bus.subscribe(MessageV2.Event.PartUpdated, this.handleMessagePartUpdated.bind(this))
-    Bus.subscribe(Session.Event.Updated, this.handleSessionUpdated.bind(this))
+  private projectFor(sessionId: string): string {
+    const cwd = this.cwds.get(sessionId) ?? process.cwd()
+    return this.projectNameExtractor.extract(cwd)
+  }
 
-    console.log('[EVENT_LISTENERS] Subscribed to OpenCode Bus events')
+  private clip(text: string): string {
+    if (text.length <= MAX_FIELD_CHARS) return text
+    return `${text.slice(0, MAX_FIELD_CHARS)}\n…[truncated ${text.length - MAX_FIELD_CHARS} chars]`
+  }
+
+  private strip(text: string): string {
+    return this.privacyStripper.stripFromText(text)
   }
 
   /**
-   * Handle session creation - initialize claude-mem session
-   * Uses real Session.Info from OpenCode
+   * Called on a user prompt. Registers the OpenCode session with claude-mem.
+   *
+   * @param sessionId OpenCode session id
+   * @param promptText the prompt text (privacy tags stripped by the caller)
+   * @param cwd working directory for the session
    */
-  private async handleSessionCreated(event: {
-    type: string
-    properties: { info: any }
-  }): Promise<void> {
-    const { info } = event.properties
-    const project = this.projectNameExtractor.extract(info.directory)
-    const openCodeSessionId = info.id
-    const title = info.title || 'New session'
+  async handlePrompt(sessionId: string, promptText: string, cwd?: string): Promise<void> {
+    if (cwd) this.cwds.set(sessionId, cwd)
+    this.enqueue(sessionId, async () => {
+      try {
+        const project = this.projectFor(sessionId)
+        const response = await this.workerClient.initSession({
+          contentSessionId: sessionId,
+          project,
+          prompt: this.clip(this.strip(promptText)) || '(no text)',
+          cwd: this.cwds.get(sessionId),
+          platformSource: 'opencode'
+        })
 
-    console.log(`[EVENT_LISTENERS] Session created: ${openCodeSessionId}`)
+        if (response.skipped) {
+          this.skipped.add(sessionId)
+          return
+        }
+        this.skipped.delete(sessionId)
 
-    try {
-      const response = await this.workerClient.initSession({
-        contentSessionId: openCodeSessionId,
-        project,
-        prompt: title
-      })
-
-      if (response.skipped) {
-        console.log(`[EVENT_LISTENERS] Session marked as private: ${openCodeSessionId}`)
-        console.log(`[EVENT_LISTENERS] Reason: ${response.reason}`)
-        return
+        if (typeof response.sessionDbId === 'number') {
+          this.dbIds.set(sessionId, response.sessionDbId)
+          this.sessionMapper.mapOpenCodeToClaudeMem(sessionId, response.sessionDbId)
+        }
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] init failed for ${sessionId}:`, error)
       }
-
-      this.sessionMapper.mapOpenCodeToClaudeMem(
-        openCodeSessionId,
-        response.sessionDbId
-      )
-
-      this.promptNumberTracker.set(openCodeSessionId, response.promptNumber)
-
-      console.log(`[EVENT_LISTENERS] Mapped ${openCodeSessionId} → ${response.sessionDbId}`)
-      console.log(`[EVENT_LISTENERS] Project: ${project}, Prompt #${response.promptNumber}`)
-    } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to initialize session ${openCodeSessionId}:`, error)
-    }
+    })
   }
 
   /**
-   * Handle message part updates - capture tool usage
-   * Uses real MessageV2.Part from OpenCode
+   * Called after a tool executes. Records a claude-mem observation.
+   *
+   * @param sessionId OpenCode session id
+   * @param tool tool name
+   * @param input tool input (object or JSON string)
+   * @param response tool result text
+   * @param toolUseId optional tool-use id
+   * @param cwd working directory
    */
-  private async handleMessagePartUpdated(event: {
-    type: string
-    properties: { part: any }
-  }): Promise<void> {
-    const { part } = event.properties
+  async handleToolUse(
+    sessionId: string,
+    tool: string,
+    input: unknown,
+    response: string,
+    toolUseId?: string,
+    cwd?: string
+  ): Promise<void> {
+    if (SKIP_TOOLS.has(String(tool).toLowerCase())) return
+    if (cwd) this.cwds.set(sessionId, cwd)
 
-    if (part.type !== 'tool_call') {
-      return
-    }
+    this.enqueue(sessionId, async () => {
+      if (this.skipped.has(sessionId)) return
+      try {
+        let toolInput: unknown = input
+        if (typeof input === 'string') {
+          try {
+            toolInput = JSON.parse(this.clip(this.strip(input)))
+          } catch {
+            toolInput = { raw: this.clip(this.strip(input)) }
+          }
+        } else {
+          toolInput = this.privacyStripper.stripFromJson(input ?? {})
+        }
 
-    const toolName = part.name
-    const toolArgs = part.args
-    const toolResult = part.result || ''
-    const sessionId = part.sessionID
-    const cwd = part.cwd || process.cwd()
+        await this.workerClient.addObservation({
+          contentSessionId: sessionId,
+          tool_name: String(tool),
+          tool_input: toolInput,
+          tool_response: this.clip(this.strip(response ?? '')),
+          tool_use_id: toolUseId ?? '',
+          cwd: this.cwds.get(sessionId),
+          platformSource: 'opencode'
+        })
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] observation failed for ${sessionId} (${tool}):`, error)
+      }
+    })
+  }
 
-    const claudeMemSessionId = this.sessionMapper.getClaudeMemSessionId(sessionId)
-    if (!claudeMemSessionId) {
-      console.log(`[EVENT_LISTENERS] No claude-mem session for: ${sessionId}`)
-      return
-    }
+  /**
+   * Called when a session's execution succeeds. Triggers compression.
+   */
+  async handleSummarize(sessionId: string): Promise<void> {
+    this.enqueue(sessionId, async () => {
+      if (this.skipped.has(sessionId)) return
+      try {
+        await this.workerClient.summarizeSession(sessionId, { cwd: this.cwds.get(sessionId) })
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] summarize failed for ${sessionId}:`, error)
+      }
+    })
+  }
 
-    const promptNumber = this.getPromptNumber(sessionId)
-    console.log(`[EVENT_LISTENERS] Tool usage: ${sessionId} - ${toolName}`)
+  /**
+   * Called when a session is archived or deleted. Closes the claude-mem session.
+   */
+  async handleSessionEnd(sessionId: string, reason?: string): Promise<void> {
+    this.enqueue(sessionId, async () => {
+      try {
+        await this.workerClient.sessionEnd(sessionId, {
+          reason,
+          cwd: this.cwds.get(sessionId)
+        })
+      } catch (error) {
+        console.error(`[CLAUDE_MEM] session-end failed for ${sessionId}:`, error)
+      } finally {
+        this.queues.delete(sessionId)
+        this.skipped.delete(sessionId)
+        this.cwds.delete(sessionId)
+        this.dbIds.delete(sessionId)
+        this.sessionMapper.unmapSession(sessionId)
+      }
+    })
+  }
 
+  /**
+   * Fetch memory context for a session's project (used by the context hook).
+   */
+  async getContext(sessionId: string): Promise<string> {
+    const project = this.projectFor(sessionId)
     try {
-      const strippedArgs = this.privacyStripper.stripFromJson(toolArgs)
-      const strippedResult = this.privacyStripper.stripFromText(toolResult)
-
-      await this.workerClient.addObservation({
-        sessionDbId: claudeMemSessionId,
-        promptNumber,
-        toolName,
-        toolInput: strippedArgs,
-        toolOutput: strippedResult,
-        cwd,
-        timestamp: Date.now()
-      })
-
-      console.log(`[EVENT_LISTENERS] Added observation: ${claudeMemSessionId} - ${toolName}`)
+      return await this.workerClient.getProjectContext(project)
     } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to add observation:`, error)
+      console.warn(`[CLAUDE_MEM] context fetch failed for ${project}:`, error)
+      return ''
     }
   }
 
   /**
-   * Handle session updates - check for completion
-   * Uses real Session.Info from OpenCode
+   * Get claude-mem session DB id for an OpenCode session (if known).
    */
-  private async handleSessionUpdated(event: {
-    type: string
-    properties: { info: any }
-  }): Promise<void> {
-    const { info } = event.properties
-
-    if (!info.time.archived) {
-      return
-    }
-
-    const openCodeSessionId = info.id
-    console.log(`[EVENT_LISTENERS] Session archived: ${openCodeSessionId}`)
-
-    const claudeMemSessionId = this.sessionMapper.getClaudeMemSessionId(openCodeSessionId)
-    if (!claudeMemSessionId) {
-      console.log(`[EVENT_LISTENERS] No claude-mem session for: ${openCodeSessionId}`)
-      return
-    }
-
-    try {
-      await this.workerClient.completeSession(claudeMemSessionId)
-      console.log(`[EVENT_LISTENERS] Completed session: ${claudeMemSessionId}`)
-
-      this.sessionMapper.unmapSession(openCodeSessionId)
-      this.promptNumberTracker.delete(openCodeSessionId)
-    } catch (error) {
-      console.error(`[EVENT_LISTENERS] Failed to complete session:`, error)
-    }
-  }
-
-  /**
-   * Get current prompt number for a session
-   */
-  getPromptNumber(sessionId: string): number {
-    return this.promptNumberTracker.get(sessionId) ?? 1
-  }
-
-  /**
-   * Increment prompt number for a session
-   */
-  incrementPromptNumber(sessionId: string): void {
-    const current = this.promptNumberTracker.get(sessionId) ?? 1
-    this.promptNumberTracker.set(sessionId, current + 1)
+  getClaudeMemSessionId(sessionId: string): number | undefined {
+    return this.dbIds.get(sessionId) ?? this.sessionMapper.getClaudeMemSessionId(sessionId)
   }
 }

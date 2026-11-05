@@ -8,52 +8,74 @@ OpenCode integration for [claude-mem](https://github.com/thedotmack/claude-mem) 
 
 ## Requirements
 
-- **Node.js** >= 18.0.0
-- **Bun** >= 1.0.0
-- **claude-mem** >= 8.5.4 (for full functionality)
+- **Node.js** >= 18.0.0 (or **Bun** >= 1.0.0)
+- **claude-mem** >= 15.x (the worker API this package targets)
 
 ## Important Note
 
-claude-mem v8.5.4 worker API is required for full functionality but is only available from [GitHub releases](https://github.com/thedotmack/claude-mem/releases), not npm.
+This package targets the **claude-mem 15.x worker API**, which is the API shipped with
+current claude-mem releases (e.g. installed as a Claude Code plugin, where the worker
+listens on a dynamic port written to `~/.claude-mem/worker.pid`).
 
-See [Installation Guide](docs/INSTALLATION.md) for detailed instructions on installing claude-mem from GitHub.
+The legacy 8.x worker API (fixed port `37777`, `sessionDbId`-keyed requests) is **not**
+what 15.x expects. On a 15.x worker, the old field names are rejected with `HTTP 400`
+(`tool_name` / `contentSessionId` are required), and the old
+`POST /sessions/:id/complete` endpoint returns `404`. This package now sends the 15.x
+shapes and auto-detects the worker port.
+
+The worker port is resolved in this order:
+
+1. `CLAUDE_MEM_WORKER_URL` (explicit full URL)
+2. `~/.claude-mem/worker.pid` (`{ "port": NNNN }`, written by `claude-mem worker start`)
+3. `CLAUDE_MEM_WORKER_PORT`
+4. legacy `37777`
 
 ## Features
 
-- **Automatic Memory Capture**: Captures tool usage automatically via OpenCode events
+- **Automatic Memory Capture**: Captures tool usage via OpenCode plugin hooks (`tool.execute.after`)
 - **Intelligent Compression**: Uses AI to compress observations while preserving context
 - **Natural Language Search**: Search your coding history using natural language
 - **Privacy Protection**: Automatic privacy tag stripping for sensitive data
-- **Session Mapping**: Maps OpenCode sessions to claude-mem sessions
-- **Context Injection**: Automatically injects relevant memories into new sessions
+- **Session Mapping**: Maps OpenCode sessions to claude-mem sessions by `contentSessionId`
+- **15.x Worker API**: Correct field names, `platformSource: "opencode"`, port auto-detection
+- **Dual OpenCode plugin shape**: Works with OpenCode 2.x (`setup(ctx)`) and 1.x (`event`)
+- **Context Injection** (opt-in): Inject relevant memories into new sessions
 
 ## Quick Start
 
-### 1. Install claude-mem v8.5.4 from GitHub
+### 1. Make sure a claude-mem 15.x worker is running
+
+If you use claude-mem as a Claude Code plugin, the worker is already running and has
+written its port to `~/.claude-mem/worker.pid`. Verify:
 
 ```bash
-# Clone claude-mem repository
-git clone https://github.com/thedotmack/claude-mem.git
-cd claude-mem
-
-# Build and install
-bun install
-bun run build
-bun link
-
-# Verify installation
-claude-mem --version
-# Should output: 8.5.4
+# Read the actual port (it is dynamic, not always 37777)
+PORT=$(node -e "console.log(require('os').homedir() && JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.claude-mem/worker.pid','utf8')).port)")
+curl -s "http://127.0.0.1:$PORT/api/health" | head -c 200
+# expect: {"status":"ok","version":"15.x.x",...}
 ```
 
-### 2. Start claude-mem worker
+Otherwise, start one:
 
 ```bash
 claude-mem worker start
-
-# Verify worker is running
-curl http://localhost:37777/api/health
 ```
+
+### 2. Install the OpenCode plugin
+
+Either add the npm package to your OpenCode config:
+
+```jsonc
+// opencode.json
+{ "plugin": ["claude-mem-opencode"] }
+```
+
+or drop a local plugin file into `~/.config/opencode/plugins/` (or `.opencode/plugins/`)
+that re-exports this package's default plugin (see `src/plugin.ts`).
+
+> **Note:** this package's *capture* is driven by the OpenCode plugin (`src/plugin.ts`).
+> The library path (`new ClaudeMemIntegration().initialize()`) is still available for
+> manual usage and only verifies the worker is reachable.
 
 ### 3. Use in your code
 
@@ -160,31 +182,33 @@ Low-level HTTP client for claude-mem worker API.
 ```typescript
 import { WorkerClient } from 'claude-mem-opencode'
 
-const client = new WorkerClient(37777)
+// Port is auto-detected from ~/.claude-mem/worker.pid (or pass an explicit URL/port)
+const client = new WorkerClient()
 
 // Check health
 await client.healthCheck()
 
-// Initialize session
+// Initialize session (15.x: keyed by contentSessionId + platformSource)
 await client.initSession({
   contentSessionId: 'session-123',
   project: 'my-project',
-  prompt: 'Initial prompt'
+  prompt: 'Initial prompt',
+  cwd: '/home/user/project'
 })
 
-// Add observation
+// Add observation (15.x: snake_case fields)
 await client.addObservation({
-  sessionDbId: 1,
-  promptNumber: 1,
-  toolName: 'bash',
-  toolInput: { command: 'ls' },
-  toolOutput: 'file1.txt\nfile2.txt',
-  cwd: '/home/user/project',
-  timestamp: Date.now()
+  contentSessionId: 'session-123',
+  tool_name: 'bash',
+  tool_input: { command: 'ls' },
+  tool_response: 'file1.txt\nfile2.txt',
+  tool_use_id: 'toolu-1',
+  cwd: '/home/user/project'
 })
 
-// Complete session
-await client.completeSession(1)
+// Summarize (triggers compression) and end the session
+await client.summarizeSession('session-123')
+await client.sessionEnd('session-123', { reason: 'done' })
 
 // Search
 const results = await client.search('query', { limit: 10 })
@@ -367,19 +391,31 @@ See [Testing Guide](docs/TESTING.md) for comprehensive testing instructions.
 
 ## Troubleshooting
 
-### Worker not starting
+### Worker not found / connection refused
+
+The worker port is dynamic, so do not assume `37777`:
 
 ```bash
-# Verify claude-mem installation
-claude-mem --version
-# Must be 8.5.4 or higher
+# Read the actual port from the pid file the worker writes
+cat ~/.claude-mem/worker.pid
+# e.g. { "pid": 1234, "port": 37701, ... }
 
-# Check worker logs
-claude-mem worker logs
+# Verify it answers
+PORT=$(node -e "console.log(JSON.parse(require('fs').readFileSync(require('os').homedir()+'/.claude-mem/worker.pid','utf8')).port)")
+curl -s "http://127.0.0.1:$PORT/api/health"
 
-# Ensure port 37777 is available
-lsof -i :37777  # macOS/Linux
+# If the worker is not running, start it
+claude-mem worker start
 ```
+
+You can also point the client at an explicit worker with `CLAUDE_MEM_WORKER_URL` or
+`CLAUDE_MEM_WORKER_PORT`.
+
+### Observations rejected with `HTTP 400`
+
+If you are running a 15.x worker, confirm the client sends 15.x field names
+(`tool_name`, `tool_response`, `contentSessionId`). The legacy 8.x names
+(`toolName`, `toolOutput`, `sessionDbId`) are rejected by the 15.x validator.
 
 ## License
 
